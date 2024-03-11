@@ -21,22 +21,45 @@ compile_argumentsfile() ->
     case init:get_argument(compiled_args_file) of
     {ok, [[FileName]]} ->
         io:format("Compiling arguments file  ~p~n", [FileName]),
+        configure(FileName);
         %compile file to interpret int:ni(..), list of breapoints int:break(...)
-         case compile:file(FileName, [binary]) of
-            {ok, ModuleName, Binary} -> 
-                io:format("Compile result: success ~n", []),
-                case code:load_binary(ModuleName, lists:flatten(io_lib:format("~p.beam", [ModuleName])), Binary) of
-                    {module, _} -> 
-                       io:format("Module ~p loaded~n", [ModuleName]),
-                        ModuleName:configure(), ok;
-                    _ -> no_compiled_args_file
-                end;
-            Error -> 
-                io:format("Compile result: failed ~p~n", [Error]),
-                no_compiled_args_file
-        end;
+        %%  case compile:file(FileName, [binary]) of
+        %%     {ok, ModuleName, Binary} -> 
+        %%         io:format("Compile result: success ~n", []),
+        %%         case code:load_binary(ModuleName, lists:flatten(io_lib:format("~p.beam", [ModuleName])), Binary) of
+        %%             {module, _} -> 
+        %%                io:format("Module ~p loaded~n", [ModuleName]),
+        %%                 ModuleName:configure(), ok;
+        %%             _ -> no_compiled_args_file
+        %%         end;
+        %%     Error -> 
+        %%         io:format("Compile result: failed ~p~n", [Error]),
+        %%         no_compiled_args_file
+        %% end;
     _ ->
         no_compiled_args_file
+    end.
+
+configure(FileName) ->
+    {ok, File} = file:open(FileName, [raw, read_ahead]),
+    {ok, MP} = re:compile("^reak\\((.*),\\s*(\\d+).*"),
+    BpMap = parse_file(File, MP, #{}),
+    int:start(),
+    maps:map(fun(Mod, Lines) ->
+        int:ni(Mod),
+        [int:break(Mod, Line) || Line <- Lines]
+    end, BpMap).
+
+parse_file(File, MP, BpMap) ->
+    case file:read_line(File) of
+        {ok, ",int:b" ++ T} ->
+            {match, [ModStr, LineStr]} = re:run(T, MP, [{capture, [1, 2], list}]),
+            Mod = list_to_atom(ModStr),
+            Line = list_to_integer(LineStr),
+            Lines = maps:get(Mod, BpMap, []),
+            parse_file(File, MP, BpMap#{Mod => [Line | Lines]});
+        {ok, _} -> parse_file(File, MP, BpMap);
+        _ -> BpMap
     end.
 
 init(Port) ->
@@ -320,16 +343,16 @@ decode_debugger_message(VsCodePort, M) ->
         ok;
     {Verb, Data} ->
         gen_connection:send_message_to_vscode(VsCodePort,to_string(Verb), to_json(Verb, Data));
-    {new_status,Pid,idle,_} ->
-        gen_connection:send_message_to_vscode(VsCodePort,to_string(new_status), to_json(new_status, {Pid, idle}));        
+    {new_status,_Pid,idle,_} -> skip;
+        % gen_connection:send_message_to_vscode(VsCodePort,to_string(new_status), to_json(new_status, {Pid, idle}));        
     {new_status,Pid,exit,_} ->
         gen_connection:send_message_to_vscode(VsCodePort,to_string(new_status), to_json(new_status, {Pid, exit})); 
     {new_status,Pid,break,ModuleAndLine} ->
         %{new_status,<0.3.0>,break,{myapp,11}}   
         gen_connection:send_message_to_vscode(VsCodePort,to_string(on_break), to_json(on_break, {Pid, break, ModuleAndLine}));
-    {new_status,Pid,running,_} ->
+    {new_status,_Pid,running,_} -> skip;
         %{new_status,<0.3.0>,running,{}}
-        gen_connection:send_message_to_vscode(VsCodePort,to_string(new_status), to_json(new_status, {Pid, running}));
+        % gen_connection:send_message_to_vscode(VsCodePort,to_string(new_status), to_json(new_status, {Pid, running}));
     {new_status,_,waiting,_} ->
         %{new_status,<0.3.0>,waiting,{}}: no output not to pollute the console
         ok;
